@@ -1,0 +1,568 @@
+1. Host-to-Host Communication Patterns
+Use Sysmon Event ID 3 (Network Connections).
+
+Important fields to baseline:
+
+Computer (source host)
+
+DestinationIp
+
+DestinationHostname
+
+DestinationPort
+
+Image (process making connection)
+
+User
+
+Protocol
+
+Example baseline:
+
+Source Host	Destination	Port	Process
+WS01	DC01	88	lsass.exe
+WS01	FILE01	445	explorer.exe
+APP01	DB01	1433	sqlservr.exe
+Why important:
+
+Detect new connections
+
+Detect new services
+
+Detect unexpected lateral movement
+
+This data is often analyzed in Splunk or Elastic Stack.
+
+2. Domain Controller Communication Baseline
+Domain controllers are the center of authentication traffic.
+
+Baseline which hosts normally communicate with DC and on which ports.
+
+Important DC ports:
+
+Port	Protocol
+88	Kerberos
+389	LDAP
+445	SMB
+636	LDAPS
+3268	Global Catalog
+Baseline example:
+
+Workstations → DC : Kerberos (88)
+Servers → DC : LDAP (389)
+Admin machines → DC : RDP (3389)
+Anomalies to detect:
+
+Workstations performing LDAP enumeration
+
+Unknown host connecting to DC
+
+PowerShell connecting to DC
+
+3. User Authentication Patterns
+From Windows Security logs.
+
+Key Event IDs:
+
+Event ID	Meaning
+4624	Successful logon
+4625	Failed logon
+4648	Explicit credentials
+4672	Admin privileges assigned
+Fields to baseline:
+
+Account_Name
+
+Logon_Type
+
+IpAddress
+
+WorkstationName
+
+Computer
+
+Example baseline:
+
+User	Source	Destination	Logon Type
+jsmith	WS01	DC01	Network
+admin1	ADMINPC	SERVER01	RDP
+Abnormal patterns:
+
+user logging into new machines
+
+admin logins from workstation
+
+service accounts interactive login
+
+4. Process-to-Network Behavior
+Sysmon provides process visibility.
+
+Important fields:
+
+Image
+
+ParentImage
+
+CommandLine
+
+DestinationPort
+
+DestinationIp
+
+Example baseline:
+
+Process	Network Usage
+chrome.exe	internet
+svchost.exe	DNS
+lsass.exe	Kerberos
+explorer.exe	SMB
+Suspicious examples:
+
+powershell.exe connecting to DC
+
+cmd.exe initiating SMB sessions
+
+rundll32.exe network traffic
+
+5. Lateral Movement Behavior
+Baseline normal remote administration patterns.
+
+Protocols to monitor:
+
+Port	Use
+3389	RDP
+445	SMB
+5985	WinRM
+135	RPC
+Baseline example:
+
+Admin-PC → Servers (RDP)
+Backup Server → All hosts (SMB)
+Anomalies:
+
+Workstation → Workstation SMB
+
+User workstation performing RDP to many machines
+
+6. Time-Based Network Behavior
+Baseline when activity normally occurs.
+
+Fields:
+
+_time
+
+Account_Name
+
+Computer
+
+Examples:
+
+Activity	Normal Time
+User logons	8 AM – 6 PM
+Backup SMB traffic	Night
+Admin RDP	Maintenance windows
+Alerts:
+
+logins at 3 AM
+
+server communication outside schedule
+
+7. DNS Resolution Patterns
+From Sysmon Event ID 22 (DNS Query).
+
+Fields:
+
+QueryName
+
+Image
+
+Computer
+
+Baseline:
+
+Process	Domain
+chrome.exe	external websites
+svchost.exe	internal DNS
+Suspicious:
+
+random domains
+
+algorithmic domains (DGA)
+
+powershell DNS queries
+
+8. Service Account Behavior
+Baseline service accounts:
+
+where they log in
+
+which processes use them
+
+network connections
+
+Example:
+
+Account	Host	Process
+svc_sql	DB01	sqlservr.exe
+Suspicious:
+
+service account logging into workstation
+
+service account interactive login
+
+9. Asset Role Identification
+From network patterns you can infer:
+
+Role	Indicators
+Domain Controller	Kerberos + LDAP
+File Server	SMB heavy
+Database	SQL ports
+Workstation	user logins
+This helps identify unexpected services.
+
+10. Rare or First-Seen Events
+Very powerful baseline technique:
+
+Detect:
+
+new process making network connections
+
+new host connecting to DC
+
+new admin login path
+
+✅ Minimum dataset needed for good baseline
+
+From Sysmon:
+
+Event ID 1 – Process creation
+
+Event ID 3 – Network connections
+
+Event ID 22 – DNS queries
+
+From Windows Logs:
+
+4624 – Logon
+
+4625 – Failed logon
+
+4672 – Privileged logon
+
+💡 Professional SOC trick:
+The best baseline model usually tracks this relationship:
+
+User → Host → Process → Destination → Port
+Example:
+
+jsmith → WS01 → chrome.exe → internet → 443
+Anything outside this pattern becomes high-confidence anomaly detection.
+
+
+
+Below is a **practical SOC-style baseline framework** using **Windows Security Logs + Sysmon logs** in **Splunk**.
+These queries build a **baseline of normal network and authentication behavior**, especially around **Domain Controllers**.
+
+The goal is to establish what is **normal**, so deviations become easy to detect. 🛡️
+
+---
+
+# 1. Host → Host Communication Baseline
+
+Using **Sysmon Event ID 3 (Network Connections)**.
+
+```spl
+index=sysmon EventCode=3
+| eval src_host=Computer
+| eval dest_host=DestinationHostname
+| stats count by src_host dest_host DestinationPort
+| sort -count
+```
+
+Purpose:
+
+* Identify normal **machine-to-machine communication**
+* Build network topology.
+
+Example baseline:
+
+```
+WS01 → DC01 : 88
+WS01 → FILE01 : 445
+APP01 → DB01 : 1433
+```
+
+---
+
+# 2. Domain Controller Communication Baseline
+
+```spl
+index=sysmon EventCode=3 DestinationHostname="DC01"
+| stats count by Computer DestinationPort Image
+| sort -count
+```
+
+Tracks:
+
+* Which hosts talk to the DC
+* What processes make the connections.
+
+Suspicious example:
+
+```
+powershell.exe → DC01 : 389
+```
+
+---
+
+# 3. Process → Network Behavior Baseline
+
+```spl
+index=sysmon EventCode=3
+| stats count by Image DestinationPort
+| sort -count
+```
+
+Example baseline:
+
+| Process     | Port |
+| ----------- | ---- |
+| chrome.exe  | 443  |
+| svchost.exe | 53   |
+| lsass.exe   | 88   |
+
+Flag anomalies like:
+
+```
+cmd.exe → 445
+```
+
+---
+
+# 4. User Logon Baseline
+
+Using **Windows Event 4624**.
+
+```spl
+index=wineventlog EventCode=4624
+| stats count by Account_Name WorkstationName Computer Logon_Type
+| sort -count
+```
+
+Purpose:
+
+* Track normal login paths.
+
+Example:
+
+```
+jsmith → WS01 → FILE01
+```
+
+Alert when:
+
+```
+jsmith → DC01
+```
+
+---
+
+# 5. Administrative Login Baseline
+
+Detect **privileged logons**.
+
+```spl
+index=wineventlog EventCode=4672
+| stats count by Account_Name Computer
+| sort -count
+```
+
+This identifies:
+
+* which hosts admins normally access.
+
+Suspicious:
+
+```
+admin → workstation
+```
+
+---
+
+# 6. Lateral Movement Baseline
+
+Look for **SMB and RDP patterns**.
+
+```spl
+index=sysmon EventCode=3 DestinationPort IN (445,3389,5985)
+| stats count by Computer DestinationHostname DestinationPort
+| sort -count
+```
+
+Normal pattern:
+
+```
+ADMIN-PC → SERVERS (RDP)
+```
+
+Suspicious:
+
+```
+WS01 → WS02 (RDP)
+```
+
+---
+
+# 7. DNS Query Baseline
+
+Using **Sysmon Event 22**.
+
+```spl
+index=sysmon EventCode=22
+| stats count by Image QueryName
+| sort -count
+```
+
+Baseline domains accessed by processes.
+
+Example:
+
+```
+chrome.exe → google.com
+svchost.exe → internal.local
+```
+
+Suspicious:
+
+```
+powershell.exe → randomdomain.xyz
+```
+
+---
+
+# 8. Service Account Behavior Baseline
+
+```spl
+index=wineventlog EventCode=4624
+| search Account_Name="svc*"
+| stats count by Account_Name Computer Logon_Type
+```
+
+Check where service accounts log in.
+
+Example:
+
+```
+svc_sql → DB01
+```
+
+Suspicious:
+
+```
+svc_sql → WS01
+```
+
+---
+
+# 9. Rare Network Connections
+
+Detect **first-seen communication paths**.
+
+```spl
+index=sysmon EventCode=3
+| stats earliest(_time) as first_seen latest(_time) as last_seen count by Computer DestinationHostname DestinationPort
+| sort first_seen
+```
+
+Shows **new network relationships**.
+
+---
+
+# 10. Rare Processes Making Network Connections
+
+```spl
+index=sysmon EventCode=3
+| stats count by Image
+| where count < 10
+| sort count
+```
+
+Helps find malware or uncommon tools.
+
+---
+
+# 11. Off-Hours Authentication
+
+```spl
+index=wineventlog EventCode=4624
+| eval hour=strftime(_time,"%H")
+| where hour < 6 OR hour > 20
+| stats count by Account_Name Computer hour
+```
+
+Detects suspicious login times.
+
+---
+
+# 12. Workstation → Domain Controller Monitoring
+
+```spl
+index=sysmon EventCode=3 DestinationHostname="DC01"
+| stats count by Computer Image DestinationPort
+| sort -count
+```
+
+Alert if:
+
+```
+powershell.exe
+wmic.exe
+psexec.exe
+```
+
+connect to DC.
+
+---
+
+# Ideal Baseline Relationship Model
+
+SOC teams often baseline this chain:
+
+```
+User → Host → Process → Destination → Port
+```
+
+Example:
+
+```
+jsmith → WS01 → chrome.exe → internet → 443
+```
+
+Anything outside the pattern becomes **anomaly detection**.
+
+---
+
+# What This Framework Gives You
+
+You can identify:
+
+* lateral movement
+* pass-the-hash attacks
+* unusual domain controller access
+* malware beaconing
+* compromised service accounts
+* abnormal admin activity
+
+---
+
+💡 **Advanced trick used by threat hunters**
+
+The best detection model from these logs is building a **network graph**:
+
+```
+Host → Host → Service → Process
+```
+
+Which can reveal **attack paths toward the Domain Controller**.
+
+---
